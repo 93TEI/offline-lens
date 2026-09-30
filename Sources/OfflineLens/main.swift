@@ -7,7 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow!
     private let source = NSTextView()
     private let result = NSTextView()
-    private let question = NSTextField(string: "가장 많이 구매한 물건의 1개 가격은?")
+    private let question = NSTextField(string: "")
     private let status = NSTextField(labelWithString: "대기 중 · 모델 미사용")
     private let ai = NSButton(checkboxWithTitle: "필요하면 로컬 AI 사용", target: nil, action: nil)
     private var actionButtons: [NSButton] = []
@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var busy = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        ai.state = .on
         buildMenu()
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.image = NSImage(systemSymbolName: "camera.viewfinder", accessibilityDescription: "지금 보이는 화면 캡처")
@@ -54,7 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let inputScroll = editor(source, editable: true)
         root.addArrangedSubview(inputScroll)
         inputScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 150).isActive = true
-        let hint = NSTextField(wrappingLabelWithString: "영수증 자동 계산은 ‘품목 수량 합계’ 순서의 표를 지원합니다. 인식한 열 순서를 확인해 주세요.")
+        let hint = NSTextField(wrappingLabelWithString: "영수증의 가격·개수·합계 열을 복원하고 검산합니다. 원본 OCR과 복원한 표를 확인해 주세요.")
         hint.textColor = .secondaryLabelColor
         hint.font = .systemFont(ofSize: 12)
         root.addArrangedSubview(hint)
@@ -66,8 +67,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         solveButton.keyEquivalent = "\r"
         stopButton = NSButton(title: "AI 중지", target: self, action: #selector(stop))
         stopButton.isEnabled = false
-        let settings = button("AI 파일 설정", #selector(configure))
-        let controls = NSStackView(views: [solveButton, stopButton, ai, settings])
+        let settings = button("다른 AI 연결", #selector(configure))
+        let modelButton = button("AI로 풀이", #selector(solveWithAI))
+        let controls = NSStackView(views: [solveButton, modelButton, stopButton, ai, settings])
         controls.spacing = 10
         root.addArrangedSubview(controls)
         let outputScroll = editor(result, editable: false)
@@ -80,10 +82,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for view in [inputScroll, outputScroll, question, hint] {
             view.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -40).isActive = true
         }
-        result.string = "크롬 등 원하는 화면을 띄운 상태에서 메뉴 막대의 카메라 아이콘을 누르세요. 지금 보이는 화면 전체를 한 번 캡처합니다.\n\n앱의 캡처 버튼도 사용할 수 있습니다. 이 앱 창만 잠시 숨기고 마우스가 있는 모니터를 캡처합니다.\n\n국어 지문 풀이에는 별도로 준비한 로컬 AI 파일이 필요합니다."
+        let installed = LocalModel.installedFiles() != nil
+        status.stringValue = installed ? "로컬 AI 준비됨 · 필요할 때만 실행" : "로컬 AI 설치 필요"
+        result.string = "메뉴 막대의 카메라 아이콘으로 현재 화면을 읽거나 ‘사진 열기’로 문제 이미지를 선택하세요. 이미지 안의 질문도 자동으로 읽습니다.\n\n읽은 내용을 확인한 뒤 ‘풀이하기’를 누르세요. 계산은 즉시 처리하고, 다른 질문은 연결된 로컬 AI로 풉니다."
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        let args = CommandLine.arguments
+        if let index = args.firstIndex(of: "--open-image"), args.indices.contains(index + 1) {
+            recognize(URL(fileURLWithPath: args[index + 1]), temporary: false)
+        }
     }
 
     private func button(_ title: String, _ action: Selector) -> NSButton {
@@ -161,7 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openImage() {
         guard !busy else { return }
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.png, .jpeg, .heic, .tiff, .bmp]
+        panel.allowedContentTypes = [.png, .jpeg, .heic, .tiff, .bmp, UTType(filenameExtension: "webp") ?? .image]
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK, let url = panel.url { recognize(url, temporary: false) }
     }
@@ -225,13 +233,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func recognize(_ url: URL, temporary: Bool) {
         setBusy(true, "이미지에서 글자를 추출하는 중…")
         worker.async { [weak self] in
-            let outcome: Result<String, Error> = autoreleasepool { Result { try OCR.read(url) } }
+            let outcome: Result<OCRDocument, Error> = autoreleasepool { Result { try OCR.readDocument(url) } }
             if temporary { try? FileManager.default.removeItem(at: url) }
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.captureURL = nil
                 switch outcome {
-                case .success(let text): self.source.string = text; self.result.string = "읽은 내용과 질문을 확인하고 ‘풀이하기’를 누르세요."
+                case .success(let document):
+                    self.source.string = document.text
+                    self.question.stringValue = document.question ?? ""
+                    self.result.string = document.receipt.map { "표 복원 · 가격 × 개수 검산 완료\n\n" + $0.evidence } ?? "읽은 내용과 질문을 확인하고 ‘풀이하기’를 누르세요."
                 case .failure(let error): self.result.string = error.localizedDescription
                 }
                 self.setBusy(false, "OCR 종료 · 모델 미사용")
@@ -240,28 +251,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func solve() {
+        performSolve(forceAI: false)
+    }
+
+    @objc private func solveWithAI() {
+        performSolve(forceAI: true)
+    }
+
+    private func performSolve(forceAI: Bool) {
         guard !busy else { return }
         let text = source.string.trimmingCharacters(in: .whitespacesAndNewlines)
         let q = question.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { result.string = "질문 또는 계산식을 입력해 주세요."; return }
         guard text.count <= 20_000, q.count <= 500 else { result.string = "한 번에 문제 하나만 입력해 주세요. 지문 20,000자, 질문 500자 이내로 제한합니다."; return }
-        if let answer = Solver.answer(text: text, question: q) {
+        if !forceAI, let answer = Solver.answer(text: text, question: q) {
             result.string = answer
             status.stringValue = "계산 완료 · AI 모델 미사용"
             return
         }
-        guard ai.state == .on else {
+        guard forceAI || ai.state == .on else {
             result.string = "현재 입력은 자동 계산으로 확실하게 풀 수 없습니다.\n\n영수증은 원본을 확인한 뒤 아래처럼 정리해 주세요.\n품목 수량 합계\n우유 2 4800\n빵 3 4500\n\n국어 지문이나 다른 질문은 ‘AI 파일 설정’ 후 ‘필요하면 로컬 AI 사용’을 켜 주세요."
             return
         }
-        let executable = UserDefaults.standard.string(forKey: "llamaExecutable") ?? ""
-        let path = UserDefaults.standard.string(forKey: "ggufModel") ?? ""
+        guard let files = LocalModel.installedFiles() else {
+            result.string = "로컬 AI가 설치되지 않았습니다. 프로젝트의 scripts/install-local-ai.py를 실행한 뒤 다시 빌드하거나, ‘다른 AI 연결’에서 모델과 실행 파일을 선택해 주세요."
+            return
+        }
         setBusy(true, "로컬 AI 실행 중 · 최대 60초 · 완료 후 모델 종료")
         stopButton.isEnabled = true
         model.prepare()
         worker.async { [weak self] in
             guard let self = self else { return }
-            let outcome = Result { try self.model.answer(text: text, question: q, executable: executable, model: path) }
+            let outcome = Result { try self.model.answer(text: text, question: q, executable: files.executable, model: files.model) }
             DispatchQueue.main.async {
                 switch outcome {
                 case .success(let answer): self.result.string = answer
@@ -277,7 +298,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func configure() {
         guard !busy else { return }
         let executable = NSOpenPanel()
-        executable.title = "로컬 llama-cli 실행 파일 선택"
+        executable.title = "로컬 llama-completion 또는 llama-cli 선택"
         executable.message = "미리 준비한 llama.cpp의 llama-cli를 선택하세요. 앱은 파일을 다운로드하지 않습니다."
         executable.allowsMultipleSelection = false
         guard executable.runModal() == .OK, let binary = executable.url else { return }
@@ -299,6 +320,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let captureProcess = captureProcess, captureProcess.isRunning { captureProcess.terminate(); captureProcess.waitUntilExit() }
         if let captureURL = captureURL { try? FileManager.default.removeItem(at: captureURL) }
     }
+}
+
+if CommandLine.arguments.contains("--check-image") {
+    do { try ImageCheck.run(); exit(0) }
+    catch { fputs("\(error.localizedDescription)\n", stderr); exit(1) }
 }
 
 if CommandLine.arguments.contains("--check-ocr") {

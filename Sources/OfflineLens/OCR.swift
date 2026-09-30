@@ -1,6 +1,17 @@
 import AppKit
 import Vision
 import ImageIO
+import OfflineLensCore
+
+struct OCRDocument {
+    let rawText: String
+    let receipt: ReconstructedReceipt?
+    let question: String?
+    var text: String {
+        guard let receipt = receipt else { return rawText }
+        return receipt.table + "\n\n원본 OCR:\n" + rawText
+    }
+}
 
 enum LensError: LocalizedError {
     case message(String)
@@ -9,12 +20,16 @@ enum LensError: LocalizedError {
 
 enum OCR {
     static func read(_ url: URL) throws -> String {
+        try readDocument(url).text
+    }
+
+    static func readDocument(_ url: URL) throws -> OCRDocument {
         // Decode a bounded thumbnail directly; do not retain the original full-size bitmap.
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
               let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
                 kCGImageSourceCreateThumbnailWithTransform: true,
-                kCGImageSourceThumbnailMaxPixelSize: 1800,
+                kCGImageSourceThumbnailMaxPixelSize: 2400,
                 kCGImageSourceShouldCacheImmediately: true
               ] as CFDictionary) else { throw LensError.message("이미지를 열 수 없습니다.") }
         let request = VNRecognizeTextRequest()
@@ -28,6 +43,21 @@ enum OCR {
         try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
         // Group observations into visual rows before ordering left to right.
         let observations = (request.results ?? []).sorted { $0.boundingBox.midY > $1.boundingBox.midY }
+        func token(_ string: String, _ box: CGRect, _ confidence: Float) -> OCRToken {
+            OCRToken(text: string, x: box.minX, y: box.minY, width: box.width, height: box.height, confidence: Double(confidence))
+        }
+        var lines: [OCRToken] = []
+        var tokens: [OCRToken] = []
+        let regex = try NSRegularExpression(pattern: #"가격|단가|개수|수량|총합|합계|금액|제품명|품목|상품명|\d[\d,]*(?:\.\d+)?"#)
+        for observation in observations {
+            guard let candidate = observation.topCandidates(1).first else { continue }
+            lines.append(token(candidate.string, observation.boundingBox, candidate.confidence))
+            for match in regex.matches(in: candidate.string, range: NSRange(candidate.string.startIndex..., in: candidate.string)) {
+                guard let range = Range(match.range, in: candidate.string),
+                      let box = try candidate.boundingBox(for: range) else { continue }
+                tokens.append(token(String(candidate.string[range]), box.boundingBox, candidate.confidence))
+            }
+        }
         var rows: [[VNRecognizedTextObservation]] = []
         for observation in observations {
             if let index = rows.firstIndex(where: { row in
@@ -40,6 +70,9 @@ enum OCR {
             row.sorted { $0.boundingBox.minX < $1.boundingBox.minX }.compactMap { $0.topCandidates(1).first?.string }.joined(separator: "  ")
         }.joined(separator: "\n")
         guard !text.isEmpty else { throw LensError.message("글자를 찾지 못했습니다. 글자가 크게 보이도록 영역을 다시 선택해 주세요.") }
-        return text
+        let question = lines.first {
+            $0.text.contains("?") || $0.text.contains("？") || $0.text.contains("입니까")
+        }?.text
+        return OCRDocument(rawText: text, receipt: ReceiptLayout.reconstruct(lines: lines, tokens: tokens), question: question)
     }
 }

@@ -11,21 +11,32 @@ public enum Solver {
     // meanings can silently confuse unit price and total price.
     public static func receiptItems(_ text: String) -> [ReceiptItem]? {
         let lines = text.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-        guard let header = lines.firstIndex(where: {
-            $0.replacingOccurrences(of: " ", with: "").replacingOccurrences(of: "|", with: "") == "품목수량합계"
-        }) else { return nil }
+        let labels = ["제품명": "품목", "상품명": "품목", "개수": "수량", "총합": "합계", "단가": "가격"]
+        func normalized(_ line: String) -> String {
+            labels.reduce(line.replacingOccurrences(of: " ", with: "").replacingOccurrences(of: "|", with: "")) {
+                $0.replacingOccurrences(of: $1.key, with: $1.value)
+            }
+        }
+        guard let header = lines.firstIndex(where: { ["품목수량합계", "품목가격수량합계"].contains(normalized($0)) }) else { return nil }
+        let hasPrice = normalized(lines[header]) == "품목가격수량합계"
         var items: [ReceiptItem] = []
-        let pattern = #"^(.+?)\s+(\d+)\s*개?\s+([\d,]+)\s*원?$"#
+        let pattern = hasPrice ? #"^(.+?)\s+([\d,]+)\s+(\d+)\s*개?\s+([\d,]+)\s*원?$"# : #"^(.+?)\s+(\d+)\s*개?\s+([\d,]+)\s*원?$"#
         let regex = try! NSRegularExpression(pattern: pattern)
         for raw in lines.dropFirst(header + 1) {
+            if raw == "원본 OCR:" { break }
             let line = raw.replacingOccurrences(of: "|", with: " ").trimmingCharacters(in: .whitespaces)
             guard let match = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
                   let nr = Range(match.range(at: 1), in: line),
-                  let qr = Range(match.range(at: 2), in: line),
-                  let tr = Range(match.range(at: 3), in: line),
+                  let qr = Range(match.range(at: hasPrice ? 3 : 2), in: line),
+                  let tr = Range(match.range(at: hasPrice ? 4 : 3), in: line),
                   let quantity = Decimal(string: String(line[qr])), quantity > 0,
                   let total = Decimal(string: line[tr].replacingOccurrences(of: ",", with: "")), total >= 0
             else { return nil }
+            if hasPrice {
+                guard let pr = Range(match.range(at: 2), in: line),
+                      let price = Decimal(string: line[pr].replacingOccurrences(of: ",", with: "")),
+                      price * quantity == total else { return nil }
+            }
             let name = String(line[nr]).trimmingCharacters(in: .whitespaces)
             guard !["총합계", "합계", "할인", "거스름돈", "결제"].contains(where: { name.contains($0) }) else { return nil }
             items.append(.init(name: name, quantity: quantity, total: total))
@@ -35,6 +46,31 @@ public enum Solver {
 
     public static func answer(text: String, question: String) -> String? {
         let q = question.replacingOccurrences(of: " ", with: "")
+        if q.contains("총"), (q.contains("몇개") || q.contains("개수") || q.contains("수량")),
+           let items = receiptItems(text) {
+            return "정답: \(format(items.reduce(0) { $0 + $1.quantity }))개\n근거: " + items.map { format($0.quantity) }.joined(separator: " + ")
+        }
+        if (q.lowercased().contains("kg") || q.contains("킬로그램")),
+           let items = receiptItems(text) {
+            let unitPattern = #"(\d+(?:\.\d+)?)\s*(kg|킬로그램)"#
+            let regex = try! NSRegularExpression(pattern: unitPattern, options: .caseInsensitive)
+            let matches = items.compactMap { item -> (ReceiptItem, Decimal)? in
+                guard let match = regex.firstMatch(in: item.name, range: NSRange(item.name.startIndex..., in: item.name)),
+                      let range = Range(match.range(at: 1), in: item.name),
+                      let weight = Decimal(string: String(item.name[range])) else { return nil }
+                let label = regex.stringByReplacingMatches(in: item.name, range: NSRange(item.name.startIndex..., in: item.name), withTemplate: "").replacingOccurrences(of: " ", with: "")
+                guard !label.isEmpty, q.contains(label) else { return nil }
+                return (item, weight)
+            }
+            if matches.count == 1, let (item, weight) = matches.first {
+                if q.contains("하나") || q.contains("한개") || q.contains("1개") || q.contains("개당") {
+                    return "정답: \(format(weight))kg\n근거: 품목명 ‘\(item.name)’에 표시된 한 개의 무게입니다."
+                }
+                if q.contains("총") || q.contains("전체") {
+                    return "정답: \(format(weight * item.quantity))kg\n근거: 한 개 \(format(weight))kg × \(format(item.quantity))개"
+                }
+            }
+        }
         if q.contains("가장많") && (q.contains("1개") || q.contains("한개") || q.contains("개당")),
            let items = receiptItems(text) {
             // Combine repeated rows only when the per-unit price agrees.
