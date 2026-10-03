@@ -50,6 +50,12 @@ public enum Solver {
            let items = receiptItems(text) {
             return "정답: \(format(items.reduce(0) { $0 + $1.quantity }))개\n근거: " + items.map { format($0.quantity) }.joined(separator: " + ")
         }
+        if !q.contains("총"), !q.contains("전체"), q.contains("몇개"), let items = receiptItems(text) {
+            let matches = items.filter { q.contains($0.name.replacingOccurrences(of: " ", with: "")) }
+            if matches.count == 1, let item = matches.first {
+                return "정답: \(format(item.quantity))개\n근거: ‘\(item.name)’ 행의 수량입니다."
+            }
+        }
         if (q.lowercased().contains("kg") || q.contains("킬로그램")),
            let items = receiptItems(text) {
             let unitPattern = #"(\d+(?:\.\d+)?)\s*(kg|킬로그램)"#

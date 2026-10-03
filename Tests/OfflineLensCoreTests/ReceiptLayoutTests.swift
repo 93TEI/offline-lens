@@ -55,4 +55,11 @@ struct ReceiptLayoutTests {
         #expect(Solver.answer(text: text, question: "총 구매 개수는?")?.contains("정답: 3개") == true)
         #expect(Solver.answer(text: "제품명 가격 개수 총합\n사과 | 400 | 2 | 900", question: "총 몇 개?") == nil)
     }
+
+    @Test func namedProductCountDoesNotUseAdjacentRowOrTotal() {
+        let table = "품목 가격 수량 합계\n냉동 전복 | 800 | 5 | 4000\nHACCP 루테인 | 900 | 1 | 900"
+        #expect(Solver.answer(text: table, question: "HACCP 루테인은 몇 개 구매했습니까?")?.contains("정답: 1개") == true)
+        #expect(Solver.answer(text: table, question: "총 몇 개 구매했습니까?")?.contains("정답: 6개") == true)
+        #expect(Solver.answer(text: table, question: "없는 품목은 몇 개?") == nil)
+    }
 }

@@ -1,6 +1,7 @@
 import AppKit
 import Vision
 import ImageIO
+import CoreImage
 import OfflineLensCore
 
 struct OCRDocument {
@@ -8,7 +9,11 @@ struct OCRDocument {
     let receipt: ReconstructedReceipt?
     let question: String?
     var text: String {
-        guard let receipt = receipt else { return rawText }
+        guard let receipt = receipt else {
+            let compact = rawText.replacingOccurrences(of: " ", with: "")
+            let receiptLike = compact.contains("가격") && (compact.contains("개수") || compact.contains("수량"))
+            return receiptLike ? "영수증 표 확인 필요:\n" + rawText : rawText
+        }
         return receipt.table + "\n\n원본 OCR:\n" + rawText
     }
 }
@@ -32,6 +37,39 @@ enum OCR {
                 kCGImageSourceThumbnailMaxPixelSize: 2400,
                 kCGImageSourceShouldCacheImmediately: true
               ] as CFDictionary) else { throw LensError.message("이미지를 열 수 없습니다.") }
+        let original = try recognize(image)
+        if original.receipt != nil { return original }
+        // Retry only an unverified receipt, using detected paper boundaries.
+        // Questions remain in the original screen coordinates/text.
+        guard original.rawText.contains("가격"), original.rawText.contains("개수") || original.rawText.contains("수량") else { return original }
+        let rectangles = VNDetectRectanglesRequest()
+        rectangles.maximumObservations = 4
+        rectangles.minimumSize = 0.15
+        rectangles.minimumAspectRatio = 0.2
+        rectangles.quadratureTolerance = 35
+        try VNImageRequestHandler(cgImage: image, options: [:]).perform([rectangles])
+        let context = CIContext(options: [.useSoftwareRenderer: true])
+        for rectangle in rectangles.results ?? [] {
+            let input = CIImage(cgImage: image)
+            func point(_ p: CGPoint) -> CIVector {
+                CIVector(x: p.x * CGFloat(image.width), y: p.y * CGFloat(image.height))
+            }
+            let corrected = input.applyingFilter("CIPerspectiveCorrection", parameters: [
+                "inputTopLeft": point(rectangle.topLeft), "inputTopRight": point(rectangle.topRight),
+                "inputBottomLeft": point(rectangle.bottomLeft), "inputBottomRight": point(rectangle.bottomRight)
+            ])
+            let scale = min(3, 2400 / max(corrected.extent.width, corrected.extent.height))
+            let enlarged = corrected.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+            guard let candidate = context.createCGImage(enlarged, from: enlarged.extent) else { continue }
+            let document = try recognize(candidate)
+            if let receipt = document.receipt {
+                return OCRDocument(rawText: original.rawText, receipt: receipt, question: original.question)
+            }
+        }
+        return original
+    }
+
+    private static func recognize(_ image: CGImage) throws -> OCRDocument {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         let supported = try request.supportedRecognitionLanguages()

@@ -1,69 +1,67 @@
-# Offline Lens handoff — 2026-10-01
+# Offline Lens handoff — 2026-10-03
 
-## User’s goal
+## 확정된 사용자 지시
 
-Finish the local, internet-free problem reader. In particular, read the two receipt screenshots the user supplied, restore rows from separated/torn columns, answer “How many items in total?” and “How many kg is one 묵은지?”, and choose the smallest local model that actually answers both. The user explicitly approved downloading model/runtime files and said to judge the choice by whether it solves these two images. They asked to be consulted about meaningful tradeoffs. They then asked to stop and leave this handoff for the next session.
+- 오프라인 macOS 문제 읽기 앱을 완성하고 미흡한 기능을 순서대로 구현·검증합니다.
+- 모델은 **Qwen2.5 7B Instruct Q4_K_M**으로 확정했습니다. 추가 모델 비교·다운로드를 진행하지 않습니다. 앞서 사용자가 부른 6B는 실제로 이 7B 모델입니다.
+- 이전 시험 모델은 모두 삭제했습니다. 현재 선택 모델 두 GGUF 파일만 설치·번들링합니다. 새 모델을 시험하라는 별도 지시가 있으면 사용한 후보를 즉시 삭제해야 합니다.
+- 모델 시험 이력과 성공/실패 표는 origin README 맨 위에 기록합니다. 이전 실패 기록을 지우거나 성공으로 바꾸지 않습니다.
+- 존댓말로 답합니다. 반복적인 확인 질문으로 작업을 멈추지 않습니다.
 
-## Current worktree
+## 프로젝트와 처리 방식
 
-Project: this repository. Changes are **uncommitted**. No screenshots were copied into the repository. The public GitHub repository is `93TEI/OfflineLens`; these changes have **not** been pushed.
+- 경로: `/Users/tei/OfflineLens`
+- origin: `https://github.com/93TEI/offline-lens.git`, 브랜치 `main`
+- 처리 방식: **사진 → Apple Vision OCR → 표 복원·검산 → 텍스트 모델 Qwen**. 모델이 사진 픽셀을 직접 읽는 방식이 아닙니다.
+- 스크린샷·GGUF·런타임·실행 보고서는 Git에 넣지 않습니다. `.local-ai`, `dist`, `.build`는 무시됩니다.
+- 선택 모델: 공식 `Qwen/Qwen2.5-7B-Instruct-GGUF`, revision `bb5d59e06d9551d752d08b292a50eb208b07ab1f`, 두 파일 총 4,683,073,632바이트. 정확한 해시와 크기는 `.local-ai/manifest.json`에 있습니다.
+- 런타임: llama.cpp macOS arm64 `b11284`. CPU 추론/입력 각 2스레드, GPU 미사용, 컨텍스트 2048, 출력 256, 온도 0, seed 42, 60초 제한.
 
-The code currently adds:
+## 구현 완료
 
-- `Sources/OfflineLensCore/ReceiptLayout.swift`: OCR word boxes, separate-column alignment for torn receipts, and a strict `unit price × quantity = total` check before restoring table rows.
-- `Sources/OfflineLens/OCR.swift`: retain Vision locations/confidence, recognize numbers inside OCR lines, grow the decode size to 2,400 px, detect the on-screen question, and supply reconstructed table plus original OCR for review.
-- `Sources/OfflineLensCore/Solver.swift`: parse a labelled price/quantity/total table; answer total item count; answer one-item and total kg from weight recorded in a product name; stop receipt parsing before the appended raw OCR.
-- `Sources/OfflineLens/main.swift`: auto-fill recognized question, show repaired table/evidence, accept WebP, enable local AI by default when installed, and provide a separate “AI로 풀이” action.
-- `Sources/OfflineLens/LocalModel.swift`: locate bundled/local model; run llama.cpp on CPU with offline mode, bounded context/output/time, and pipe the prompt as UTF-8 over stdin. The stdin change addresses a macOS `Process.arguments` Hangul normalization issue discovered during testing.
-- `Sources/OfflineLens/ImageCheck.swift`, `scripts/benchmark-images.py`, and `scripts/compare-models.py`: run OCR and either rules or model on an image, judge the two requested answers, and compare candidates. The compare script restores `.local-ai/manifest.json` when it exits normally.
-- `scripts/install-local-ai.py` and the app build script: pinned downloads with SHA-256 checks and optional bundling.
-- `Tests/OfflineLensCoreTests/ReceiptLayoutTests.swift`: tests receipt columns, row checks, total quantity, kg, and OCR-tail handling.
+1. **설치·패키징 일치**: 설치 기본값은 선택한 7B. 빌드는 manifest의 모든 모델 파일을 SHA-256·크기로 검증한 후 복사합니다. 두 분할 파일을 함께 묶고 오래된 번들 모델을 제거합니다. 모델 전체 합계 6GB 제한·분할 파일 누락·GGUF 헤더를 실행 전에 검사합니다.
+2. **HACCP 영수증 OCR 복원**: 최초 OCR에서 표를 검증하지 못하면 영수증 사각형 후보 최대 4개를 감지하고 원근 보정 후 재인식합니다. 재인식 이미지는 긴 변 2400px, 확대 최대 3배. 질문과 원본 OCR은 원래 사진에서 유지합니다. 숫자 누락을 계산으로 채우지 않습니다.
+3. **품목별 질문 처리**: 특정 품목의 개수 질문에만 해당 행과 수량 필드 지시를 전달합니다. 무게·총수량 질문은 기존 전체 표와 프롬프트를 유지합니다. 정답을 프롬프트에 넣거나 규칙 답으로 AI 출력을 대체하지 않습니다. 규칙 모드도 특정 품목 개수를 지원합니다.
+4. **불확실한 복원 처리**: 영수증 표 확인 필요 표시가 있는 입력은 검증된 표로 수정하기 전까지 AI 실행을 거절합니다. 숫자·단위를 완성하지 못한 모델 답변도 실패로 처리합니다. 틀린 숫자의 정확성까지 자동 보장하는 기능은 아닙니다.
+5. **일반 한국어 지문**: 영수증 표가 아닌 입력은 별도 한국어 지문 프롬프트를 사용합니다. 영수증용 숫자·단위 지시를 일반 지문에 적용하지 않습니다.
+6. **프로세스 정리**: UTF-8 stdin, 쓰기 전 timeout 예약, 쓰기/추론 오류 시 stdin 닫기·자식 종료·wait·상태 초기화. 중지·앱 종료도 소유한 모델 프로세스를 종료합니다.
+7. **실제 UI 검사 경로**: `--check-ui --open-image IMAGE --ui-expected ANSWER`는 앱 창의 OCR·표 표시·자동 질문·기본 AI 설정을 확인하고 실제 풀이 버튼을 누른 뒤 결과와 대기 상태 복귀를 검사합니다. 기대 답은 비교에만 사용합니다. `--check-ui-capture`는 메뉴 막대 카메라 버튼을 실행하고 OCR·임시 파일 삭제를 검사합니다.
+8. **재현 가능한 검증 도구**: `benchmark-receipts.py`는 실제 배포 경로로 임의 사진을 평가하고 실행 파일 해시 변경을 거절합니다. `check-offline.py`는 OS `deny network*` 정책의 차단 효과를 먼저 검사하고, 프로젝트 밖에서 번들 앱·모델로 OCR와 AI를 실행합니다. `--check-text`와 `--check-cancel`은 일반 지문·실제 취소를 검증합니다.
 
-## Verification already done
+## 확인된 검증
 
-- `swift test -j 2`: **10 tests passed**, including the new synthetic geometry and solver tests. Run again after continuing, since later UI/prompt edits were made.
-- `swift build -j 2`: passed after the UI changes and after switching model prompts to UTF-8 stdin. A final build after the latest prompt edit still needs confirmation.
-- Both user images were processed with Apple Vision. The current column reconstruction produced:
-  - First screenshot: `묵은지 3kg | 900 | 7 | 6300`, `블루베리즙 | 700 | 9 | 6300`, `빵가루 | 300 | 8 | 2400`. Price × quantity matches total in all rows. Question: `구매한 묵은지 하나는 몇 kg 입니까?`
-  - Second screenshot: rows `(400,2,800)`, `(300,1,300)`, `(800,1,800)`. Price × quantity matches total in all rows. Question: `영수증에서 구매한 물건은 총 몇 개 입니까?`
-- The rule solver tests produce **3kg** for the first image’s question, **21kg** for total 묵은지 weight, and **24개** for all first-image items; for the second image it produces **4개**. The user’s first image clearly asks for one 묵은지’s weight, so the earlier conversational answer “27kg” was wrong and has already been corrected to 3kg.
-- The small-model investigation is **not complete**. Several early candidate failures are invalid evidence: Swift passed Hangul in argv and llama.cpp received decomposed Jamo. After switching to UTF-8 stdin, later Qwen3 0.6B runs still did not reliably return a clean correct final answer. One reasoning response correctly worked out `2 + 1 + 1 = 4` but repeated `total_price = 1900` until its output limit; a sampled non-thinking response was wrong. Do not describe any model as passing both screenshots yet.
+- Swift 회귀 테스트: **11/11 통과**. 총수량·kg·분리 열·누락 숫자 거절·원본 OCR 중복 배제·품목별 개수·계산을 포함합니다.
+- 시스템 OCR 합성 영수증 검사: **통과**, 최다 구매 품목 가격 1500원.
+- 최종 배포 앱 빌드·두 분할 모델 SHA 검증·코드서명 검증: **통과**.
+- 새 사진 세 장, 최종 배포 앱에서 각 3회, **9/9 통과**:
+  - HACCP 루테인 개수: **1개**, 19.77~41.22초.
+  - 묵은지 한 개 무게: **3kg**, 23.28~24.51초.
+  - 찢어진 영수증 총수량: **4개**, 22.74~23.21초.
+  - 보고서: `.local-ai/receipt-release-verified.json`. 실행 파일·모델 해시와 원출력이 있습니다.
+- 실제 앱 UI: HACCP 사진 열기 → 표 복원 → 자동 질문 → 풀이 버튼 → **1개** → 대기 상태 복귀 **통과**.
+- 불확실한 표 입력: 모델 실행 전에 중단 **통과**.
+- OS 네트워크 차단: 차단 정책을 실제 요청 거절로 확인한 후, 프로젝트 밖에서 번들 모델만 사용한 OCR → AI 총수량 **4개 통과**, 27.28초. 보고서 `.local-ai/offline-check.json`.
+- 일반 한국어 지문: 장소 질문 **도서관**, 실천 내용 **일회용품 사용 줄이기**, 지문에 없는 나이 질문 **확인할 수 없습니다** 모두 근거에 맞게 통과. 소수 예제이며 국어 문제 전반의 정확도를 보장하지 않습니다.
+- 최다 구매 품목 가격: AI **1500원 통과**. 수량·무게 지시와 분리한 가격 전용 프롬프트를 사용합니다. 일반 지문은 불필요한 선행 콜론만 제거합니다. `.local-ai/runtime-final.json`, `.local-ai/evidence-check.json`.
+- 실제 모델 취소: 약 **1.15초**에 중지·자식 종료 통과. 정상 응답을 취소 성공으로 오인하지 않도록 검사 메시지를 엄격하게 확인합니다. `.local-ai/cancel-final.json`.
+- 가격·일반 지문·검사 보강 후 재빌드한 최종 앱에서도 세 영수증 **3/3 추가 통과**: 1개 18.10초, 3kg 21.67초, 4개 22.22초. `.local-ai/receipt-final-smoke.json`.
 
-## Downloaded local files (ignored by Git)
+## 남은 실사용 검증
 
-`.local-ai/` is gitignored and contains the pinned llama.cpp macOS arm64 `b11284` runtime (`llama-completion`, dylibs, licence), the official Qwen2.5-0.5B Q2/Q4 models, official Qwen3-0.6B Q8, and Qwen3 Q2_K/Q3_K_S quantizations made locally from Q8. The current manifest was restored/set to:
+- **화면 캡처 실사용 검사만 OS 권한 필요**: 배포 앱의 `--check-ui-capture`는 화면 녹음 권한이 없어 캡처 전에 명시적으로 중단했습니다. 실제 캡처·OCR·임시 파일 삭제 성공으로 기록하지 마세요. 시스템 설정 → 개인정보 보호 및 보안 → 화면 및 시스템 오디오 녹음에서 Offline Lens를 사용자가 허용하면 재검증할 수 있습니다. 사용자에게 비동기로 필요한 OS 설정을 알렸으며 다른 작업을 계속합니다.
+- 완료된 구현과 README·handoff 검증 기록을 함께 origin/main에 반영합니다. 모델·사진은 게시하지 않습니다. 다음 세션은 위 OS 권한 이후의 캡처 검증부터 이어가며, 완료된 모델 비교나 반복 시험을 다시 시작하지 않습니다.
 
-```json
-{
-  "model": "Qwen3-0.6B-Q8_0.gguf",
-  "model_revision": "23749fefcc72300e3a2ad315e1317431b06b590a",
-  "model_sha256": "9465e63a22add5354d9bb4b99e90117043c7124007664907259bd16d043bb031",
-  "model_bytes": 639446688,
-  "runtime": "b11284",
-  "runtime_sha256": "f26782642b52467e1c1f7814349c478d5477d61887aeb237b7fe1ee1527554e5",
-  "quantization": "official Q8_0"
-}
-```
+## 이력 해석
 
-The supplied screenshots were only benchmark inputs and were not committed. The temporary screenshot path may have expired; use the original image attachments again if needed.
+기존 모델 평가 표는 README에 보존되어 있습니다. 최초 세 사진 시험은 2/3 통과였으며 HACCP 실제 답은 1개, 오답은 5개였습니다. 당시 OCR이 냉동 전복의 숫자를 HACCP에 붙였습니다. 복원 수정 중 프롬프트 회귀도 발견하여 품목별 개수 변경만 범위를 좁혔습니다. 최종 배포 앱의 9/9 결과는 이전 실패를 소급해서 바꾸지 않습니다. 이전 README 기록 커밋: `f25ab72`, `41a8cf5`.
 
-## Immediate next steps
-
-1. Inspect `git status`, `LocalModel.swift`, and `.local-ai/manifest.json`. Confirm no model benchmark is still running; the user interrupted the `compare-models.py` run before it produced `comparison.json`.
-2. Fix the install/build mismatch before shipping: `install-local-ai.py` currently installs Qwen2.5 Q2 only, while `scripts/build.sh` hardcodes copying that model. These must copy the model filename from the manifest and support the selected Qwen3 candidate. The current Q8 manifest cannot successfully bundle with the hardcoded Q2 copy.
-3. Improve the model interaction without putting expected answers into the prompt. The two receipt tasks can be answered deterministically by the new solver; keep “AI로 풀이” as an honest way to test the model. For broader Korean questions, consider a small-model Korean answer check with concise user-facing fallback when it does not answer.
-4. Re-run the two-image matrix **after** the UTF-8 stdin fix and latest prompt using `scripts/compare-models.py`. It sorts by model file size and tries the installed Qwen2.5 Q2/Q4 and Qwen3 Q2/Q3/Q8 candidates. Because the generated responses varied and the harness judges first-line answers, inspect every saved JSON before calling a candidate successful. If a candidate works, repeat the two images at least three times using the same production prompt/settings and verify the kg unit is preserved.
-5. Harden process cleanup if writing the prompt to stdin throws: close/terminate the child on write error, and ensure the timeout is scheduled before potentially blocking work. Review `--predict 256` against Qwen3 reasoning output and the 60-second limit.
-6. Align README with the new installation and bundled model, run the final tests/build/`--check-ocr`, open the rebuilt app, and verify image-open → OCR → auto-question → table-check → solve. Consider a genuinely network-disabled runtime test; current `--offline` is an inference-runtime flag, not an OS sandbox.
-7. Only once all checks pass, commit and push the code to `origin/main` (the user earlier asked to publish the repository, but these current edits have not been pushed).
-
-## Useful commands
+## 실행
 
 ```sh
-cd /path/to/OfflineLens
 swift test -j 2
-swift build -j 2
-python3 scripts/benchmark-images.py <weight-question-image> <count-question-image> --iterations 3
-python3 scripts/compare-models.py <weight-question-image> <count-question-image> Qwen3-0.6B-Q2_K.gguf Qwen3-0.6B-Q3_K_S.gguf qwen2.5-0.5b-instruct-q2_k.gguf qwen2.5-0.5b-instruct-q4_0.gguf Qwen3-0.6B-Q8_0.gguf
 sh scripts/build.sh
+'dist/Offline Lens.app/Contents/MacOS/OfflineLens' --check-ocr
+open 'dist/Offline Lens.app'
 ```
+
+macOS Vision·앱 실행·새 Swift 빌드는 Codex 실행 샌드박스 바깥의 승인된 실행이 필요할 수 있습니다. 샌드박스 실패를 모델 오답으로 기록하지 않습니다. Python 검증은 `scripts/benchmark-receipts.py`, `scripts/check-offline.py`의 `--help`를 확인하세요.

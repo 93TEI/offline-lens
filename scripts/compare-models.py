@@ -14,6 +14,7 @@ def main():
     parser.add_argument("count_image")
     parser.add_argument("models", nargs="+")
     parser.add_argument("--iterations", type=int, default=1)
+    parser.add_argument("--binary", default=".build/debug/OfflineLens")
     args = parser.parse_args()
     root = Path(".local-ai")
     manifest = root / "manifest.json"
@@ -29,12 +30,14 @@ def main():
                 for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                     sha.update(chunk)
             config = json.loads(original)
+            for field in ("model_files", "model_revision", "quantization"):
+                config.pop(field, None)
             config.update(model=name, model_sha256=sha.hexdigest(), model_bytes=path.stat().st_size)
             manifest.write_text(json.dumps(config, indent=2) + "\n")
             report = root / f"{path.stem}-comparison.json"
             print(f"\nCandidate: {name} ({path.stat().st_size / 1e6:.1f} MB)", flush=True)
             result = subprocess.run([sys.executable, "scripts/benchmark-images.py", args.weight_image, args.count_image,
-                                     "--iterations", str(args.iterations), "--output", str(report)])
+                                     "--iterations", str(args.iterations), "--binary", args.binary, "--output", str(report)])
             summaries.append({"model": name, "bytes": path.stat().st_size, "sha256": sha.hexdigest(),
                               "passed": result.returncode == 0, "report": str(report)})
     finally:
