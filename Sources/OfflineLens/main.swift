@@ -357,7 +357,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         status.stringValue = "AI 파일 연결됨 · 아직 모델을 불러오지 않았습니다"
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        // orderOut temporarily removes our only window during screen capture.
+        // Keep the app alive through the delay, capture process, and OCR.
+        captureURL == nil
+    }
     func applicationWillTerminate(_ notification: Notification) {
         model.cancel()
         if let captureProcess = captureProcess, captureProcess.isRunning { captureProcess.terminate(); captureProcess.waitUntilExit() }
